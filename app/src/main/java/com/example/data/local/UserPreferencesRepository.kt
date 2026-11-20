@@ -15,8 +15,11 @@ private val Context.saraDataStore: DataStore<Preferences> by preferencesDataStor
 
 data class SaraPreferences(
     val userName: String = "বস",
-    val languageCode: String = "bn-BD", // "bn-BD", "en-US"
+    val languageCode: String = "bn-BD", // "bn-BD", "bn-IN", "en-US"
+    val voiceTonePreset: String = "MAYA_SWEET", // "MAYA_SWEET", "MAYA_SOFT", "MAYA_BRIGHT"
+    val preferredTtsVoiceName: String = "",
     val speakResponses: Boolean = true,
+    val continuousListening: Boolean = false,
     val voiceLockEnabled: Boolean = false,
     val isVoiceEnrolled: Boolean = false,
     val voicePrintJson: String = "",
@@ -31,7 +34,10 @@ class UserPreferencesRepository(private val context: Context) {
     private object Keys {
         val USER_NAME = stringPreferencesKey("user_name")
         val LANGUAGE_CODE = stringPreferencesKey("language_code")
+        val VOICE_TONE_PRESET = stringPreferencesKey("voice_tone_preset")
+        val PREFERRED_TTS_VOICE_NAME = stringPreferencesKey("preferred_tts_voice_name")
         val SPEAK_RESPONSES = booleanPreferencesKey("speak_responses")
+        val CONTINUOUS_LISTENING = booleanPreferencesKey("continuous_listening")
         val VOICE_LOCK_ENABLED = booleanPreferencesKey("voice_lock_enabled")
         val IS_VOICE_ENROLLED = booleanPreferencesKey("is_voice_enrolled")
         val VOICE_PRINT_JSON = stringPreferencesKey("voice_print_json")
@@ -45,7 +51,10 @@ class UserPreferencesRepository(private val context: Context) {
         SaraPreferences(
             userName = prefs[Keys.USER_NAME] ?: "বস",
             languageCode = prefs[Keys.LANGUAGE_CODE] ?: "bn-BD",
+            voiceTonePreset = prefs[Keys.VOICE_TONE_PRESET] ?: "MAYA_SWEET",
+            preferredTtsVoiceName = prefs[Keys.PREFERRED_TTS_VOICE_NAME] ?: "",
             speakResponses = prefs[Keys.SPEAK_RESPONSES] ?: true,
+            continuousListening = prefs[Keys.CONTINUOUS_LISTENING] ?: false,
             voiceLockEnabled = prefs[Keys.VOICE_LOCK_ENABLED] ?: false,
             isVoiceEnrolled = prefs[Keys.IS_VOICE_ENROLLED] ?: false,
             voicePrintJson = prefs[Keys.VOICE_PRINT_JSON] ?: "",
@@ -64,8 +73,20 @@ class UserPreferencesRepository(private val context: Context) {
         context.saraDataStore.edit { it[Keys.LANGUAGE_CODE] = code }
     }
 
+    suspend fun setVoiceTonePreset(presetId: String) {
+        context.saraDataStore.edit { it[Keys.VOICE_TONE_PRESET] = presetId }
+    }
+
+    suspend fun setPreferredTtsVoiceName(voiceName: String) {
+        context.saraDataStore.edit { it[Keys.PREFERRED_TTS_VOICE_NAME] = voiceName }
+    }
+
     suspend fun setSpeakResponses(enabled: Boolean) {
         context.saraDataStore.edit { it[Keys.SPEAK_RESPONSES] = enabled }
+    }
+
+    suspend fun setContinuousListening(enabled: Boolean) {
+        context.saraDataStore.edit { it[Keys.CONTINUOUS_LISTENING] = enabled }
     }
 
     suspend fun setVoiceLockEnabled(enabled: Boolean) {

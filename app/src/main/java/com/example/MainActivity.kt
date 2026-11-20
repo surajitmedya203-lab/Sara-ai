@@ -43,6 +43,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.ai.configureAppCheck
 import com.example.ui.screens.AssistantStageScreen
 import com.example.ui.screens.PersonalVaultScreen
 import com.example.ui.screens.PhoneHubScreen
@@ -93,6 +94,7 @@ private sealed class SaraDestination(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             val viewModel: SaraViewModel = viewModel()

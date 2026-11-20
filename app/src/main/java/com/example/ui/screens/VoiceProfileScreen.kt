@@ -1,12 +1,17 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,13 +25,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PictureInPictureAlt
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -58,9 +66,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.ui.components.VoiceWaveformStrip
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.SaraShaderStyle
 import com.example.viewmodel.SaraViewModel
+import com.example.voice.MayaVoiceTone
 
 @Composable
 fun VoiceProfileScreen(
@@ -71,9 +81,24 @@ fun VoiceProfileScreen(
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val enrollment by viewModel.enrollmentState.collectAsStateWithLifecycle()
     val liveAmp by viewModel.enrollmentAmplitude.collectAsStateWithLifecycle()
+    val availableVoices by viewModel.availableFemaleVoices.collectAsStateWithLifecycle()
+    val activeVoiceLabel by viewModel.activeVoiceLabel.collectAsStateWithLifecycle()
+    val isOverlayRunning by viewModel.isOverlayRunning.collectAsStateWithLifecycle()
 
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var nameInput by remember(prefs.userName) { mutableStateOf(prefs.userName) }
+
+    val notificationPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    val overlayPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (Settings.canDrawOverlays(context)) {
+            viewModel.startOverlayMode()
+        }
+    }
 
     val micPermLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -161,12 +186,10 @@ fun VoiceProfileScreen(
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.primary
                             )
-                            LinearProgressIndicator(
-                                progress = { liveAmp.coerceIn(0.08f, 1f) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(10.dp)
-                                    .clip(RoundedCornerShape(8.dp))
+                            VoiceWaveformStrip(
+                                audioLevel = liveAmp,
+                                isActive = true,
+                                shaderStyle = SaraShaderStyle.fromId(prefs.shaderStyleId)
                             )
                         }
                     } else {
@@ -344,6 +367,66 @@ fun VoiceProfileScreen(
                         }
                     }
 
+                    Text(stringResource(id = R.string.maya_voice_title), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "${stringResource(id = R.string.maya_voice_desc)} ($activeVoiceLabel)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MayaVoiceTone.entries.forEach { tone ->
+                            FilterChip(
+                                selected = prefs.voiceTonePreset == tone.id,
+                                onClick = { viewModel.updateVoiceTone(tone.id) },
+                                label = {
+                                    Text(
+                                        text = if (prefs.languageCode.startsWith("bn")) tone.labelBn else tone.labelEn,
+                                        maxLines = 1
+                                    )
+                                },
+                                modifier = Modifier.testTag("tone_${tone.id}")
+                            )
+                        }
+                    }
+
+                    if (availableVoices.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = prefs.preferredTtsVoiceName.isBlank(),
+                                onClick = { viewModel.updatePreferredTtsVoice("") },
+                                label = { Text("Auto Female") }
+                            )
+                            availableVoices.forEach { option ->
+                                FilterChip(
+                                    selected = prefs.preferredTtsVoiceName == option.voiceName,
+                                    onClick = { viewModel.updatePreferredTtsVoice(option.voiceName) },
+                                    label = { Text(option.displayLabel, maxLines = 1) }
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.testMayaVoice() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("test_maya_voice_button")
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text(if (prefs.languageCode.startsWith("bn")) "মায়ার মেয়ে কণ্ঠ শুনুন (Test Voice)" else "Test Maya Female Voice")
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -352,7 +435,7 @@ fun VoiceProfileScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Speak Responses Aloud (TTS)", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                text = "সারা উত্তর দেওয়ার সময় মুখে কথা বলবে ও ঠোঁট নাড়াবে",
+                                text = "মায়া উত্তর দেওয়ার সময় মেয়ে কণ্ঠে কথা বলবে",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -360,6 +443,92 @@ fun VoiceProfileScreen(
                         Switch(
                             checked = prefs.speakResponses,
                             onCheckedChange = { viewModel.updateSpeakResponses(it) }
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(id = R.string.overlay_toggle_title),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(id = R.string.overlay_toggle_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = isOverlayRunning,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    runWithMicPermission {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            ContextCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.POST_NOTIFICATIONS
+                                            ) != PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        }
+                                        if (Settings.canDrawOverlays(context)) {
+                                            viewModel.startOverlayMode()
+                                        } else {
+                                            val intent = Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                            overlayPermLauncher.launch(intent)
+                                        }
+                                    }
+                                } else {
+                                    viewModel.stopOverlayMode()
+                                }
+                            },
+                            modifier = Modifier.testTag("overlay_service_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(id = R.string.voice_service_toggle_title),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(id = R.string.voice_service_toggle_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = prefs.continuousListening,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    runWithMicPermission {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            ContextCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.POST_NOTIFICATIONS
+                                            ) != PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        }
+                                        viewModel.updateContinuousListening(true)
+                                    }
+                                } else {
+                                    viewModel.updateContinuousListening(false)
+                                }
+                            },
+                            modifier = Modifier.testTag("hands_free_service_switch")
                         )
                     }
 
@@ -385,10 +554,10 @@ fun VoiceProfileScreen(
             }
         }
 
-        // Firebase AI Notice Card
+        // Live Gemini Status Card
         item {
             Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
                 shape = RoundedCornerShape(18.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -397,11 +566,11 @@ fun VoiceProfileScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        text = stringResource(id = R.string.sample_ai_notice),
+                        text = stringResource(id = R.string.gemini_live_notice),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
             }

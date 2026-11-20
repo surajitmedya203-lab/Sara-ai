@@ -13,7 +13,7 @@ import com.example.actions.ParsedSaraIntent
 import com.example.actions.SaraCommandParser
 import com.example.data.ai.AiRepository
 import com.example.data.ai.ChatTurn
-import com.example.data.ai.PlaceholderAiRepository
+import com.example.data.ai.FirebaseAiRepository
 import com.example.data.local.CommandLogEntity
 import com.example.data.local.MemoryNoteEntity
 import com.example.data.local.PersonalTaskEntity
@@ -21,11 +21,15 @@ import com.example.data.local.RoutineEntity
 import com.example.data.local.SaraDatabase
 import com.example.data.local.SaraPreferences
 import com.example.data.local.UserPreferencesRepository
-import com.example.voice.SaraSpeechManager
+import com.example.overlay.OverlayAssistantService
+import com.example.voice.FemaleVoiceOption
 import com.example.voice.SaraTtsManager
 import com.example.voice.SpeechUiState
 import com.example.voice.VoiceBiometricManager
 import com.example.voice.VoiceFingerprint
+import com.example.voice.VoiceListeningService
+import com.example.voice.VoiceServiceBus
+import com.example.voice.VoiceServiceEvent
 import com.example.voice.VoiceVerificationResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,7 +46,10 @@ enum class SaraMoodState {
     LISTENING,
     THINKING,
     SPEAKING,
-    ACTION_SUCCESS
+    ACTION_SUCCESS,
+    WAVE_HI,
+    ANGRY,
+    LOVE
 }
 
 data class ConversationBubble(
@@ -66,10 +73,9 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
     private val db = SaraDatabase.getInstance(application)
     private val dao = db.saraDao()
     private val prefsRepo = UserPreferencesRepository(application)
-    private val aiRepo: AiRepository = PlaceholderAiRepository()
+    private val aiRepo: AiRepository = FirebaseAiRepository()
 
     val actionExecutor = DeviceActionExecutor(application)
-    val speechManager = SaraSpeechManager(application)
     val ttsManager = SaraTtsManager(application)
     val voiceBiometric = VoiceBiometricManager(application)
 
@@ -103,10 +109,14 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
         initialValue = emptyList()
     )
 
-    val speechState: StateFlow<SpeechUiState> = speechManager.state
-    val micRmsLevel: StateFlow<Float> = speechManager.rmsLevel
+    val speechState: StateFlow<SpeechUiState> = VoiceServiceBus.speechState
+    val micRmsLevel: StateFlow<Float> = VoiceServiceBus.rmsLevel
+    val isVoiceServiceRunning: StateFlow<Boolean> = VoiceServiceBus.isServiceRunning
+    val isOverlayRunning: StateFlow<Boolean> = OverlayAssistantService.isOverlayRunning
     val isSpeaking: StateFlow<Boolean> = ttsManager.isSpeaking
     val ttsMouthAmplitude: StateFlow<Float> = ttsManager.mouthAmplitude
+    val availableFemaleVoices: StateFlow<List<FemaleVoiceOption>> = ttsManager.availableVoices
+    val activeVoiceLabel: StateFlow<String> = ttsManager.activeVoiceLabel
     val flashlightOn: StateFlow<Boolean> = actionExecutor.flashlightOn
     val enrollmentAmplitude: StateFlow<Float> = voiceBiometric.liveAmplitude
 
@@ -138,23 +148,130 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
         refreshDeviceState()
         loadInstalledApps()
         observeSpeakingForMood()
+        observeVoiceServiceEvents()
+        observeVoicePreferences()
 
         _messages.value = listOf(
             ConversationBubble(
                 isUser = false,
-                text = "হ্যালো! আমি সারা, আপনার থ্রিডি পার্সোনাল ভয়েস অ্যাসিস্ট্যান্ট। আমাকে বাংলা বা ইংরেজিতে যেকোনো কমান্ড বলুন — কল, অ্যালার্ম, ফ্ল্যাশলাইট, অ্যাপ ওপেন, কাজ বা মেমোরি!",
+                text = "হ্যালো! আমি মায়া (Sara), আপনার ৩ডি Gemini ভয়েস অ্যাসিস্ট্যান্ট। আমাকে বাংলা বা ইংরেজিতে যেকোনো প্রশ্ন করুন বা ফোনের কাজ বলুন!",
                 badge = "READY"
             )
         )
     }
 
+    private fun observeVoicePreferences() {
+        viewModelScope.launch {
+            prefsRepo.preferences.collect { prefs ->
+                ttsManager.applyVoiceConfig(
+                    toneId = prefs.voiceTonePreset,
+                    preferredVoice = prefs.preferredTtsVoiceName,
+                    languageCode = prefs.languageCode
+                )
+            }
+        }
+    }
+
+    private var expressionResetJob: kotlinx.coroutines.Job? = null
+
     private fun observeSpeakingForMood() {
         viewModelScope.launch {
+            var wasSpeaking = false
             isSpeaking.collect { speaking ->
                 if (speaking) {
-                    _moodState.value = SaraMoodState.SPEAKING
-                } else if (_moodState.value == SaraMoodState.SPEAKING) {
-                    _moodState.value = SaraMoodState.IDLE
+                    wasSpeaking = true
+                    if (_moodState.value !in setOf(SaraMoodState.WAVE_HI, SaraMoodState.ANGRY, SaraMoodState.LOVE)) {
+                        _moodState.value = SaraMoodState.SPEAKING
+                    }
+                    if (isVoiceServiceRunning.value) {
+                        VoiceListeningService.pauseForTts(getApplication())
+                    }
+                } else {
+                    if (_moodState.value == SaraMoodState.SPEAKING) {
+                        _moodState.value = SaraMoodState.IDLE
+                    }
+                    if (wasSpeaking && preferences.value.continuousListening && isVoiceServiceRunning.value) {
+                        VoiceListeningService.resumeAfterTts(
+                            getApplication(),
+                            preferences.value.languageCode
+                        )
+                    }
+                    wasSpeaking = false
+                }
+            }
+        }
+    }
+
+    fun triggerCharacterExpression(mood: SaraMoodState) {
+        val prefs = preferences.value
+        val isBn = prefs.languageCode.startsWith("bn")
+        val reply = when (mood) {
+            SaraMoodState.WAVE_HI -> if (isBn) "হাই ${prefs.userName}! কেমন আছেন? আমি আপনার কথা শোনার জন্য রেডি!" else "Hi ${prefs.userName}! Great to see you!"
+            SaraMoodState.LOVE -> if (isBn) "আমিও আপনাকে অনেক ভালোবাসি ${prefs.userName}! 💖" else "Sending you lots of love, ${prefs.userName}! 💖"
+            SaraMoodState.ANGRY -> if (isBn) "হুম! আমার সাথে রাগ করবেন না কিন্তু — নইলে আমি কথা বলবো না! 😠" else "Hmph! Don't make me mad!"
+            SaraMoodState.ACTION_SUCCESS -> if (isBn) "ইয়ে! আমি আজ অনেক খুশি! ✨" else "Yay! Feeling super happy today!"
+            else -> ""
+        }
+        holdExpressionMood(mood, durationMs = 4200L)
+        if (reply.isNotEmpty()) {
+            appendBubble(ConversationBubble(isUser = false, text = reply, badge = mood.name))
+            if (prefs.speakResponses) {
+                ttsManager.speak(reply, prefs.languageCode)
+            }
+        }
+    }
+
+    private fun holdExpressionMood(mood: SaraMoodState, durationMs: Long = 4000L) {
+        expressionResetJob?.cancel()
+        _moodState.value = mood
+        expressionResetJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(durationMs)
+            if (_moodState.value == mood) {
+                _moodState.value = SaraMoodState.IDLE
+            }
+        }
+    }
+
+    private fun observeVoiceServiceEvents() {
+        viewModelScope.launch {
+            VoiceServiceBus.events.collect { event ->
+                when (event) {
+                    is VoiceServiceEvent.TranscriptCaptured -> {
+                        processUserCommand(event.text, fromVoice = true)
+                    }
+                    is VoiceServiceEvent.CaptureError -> {
+                        if (_moodState.value == SaraMoodState.LISTENING) {
+                            _moodState.value = SaraMoodState.IDLE
+                        }
+                        appendBubble(
+                            ConversationBubble(
+                                isUser = false,
+                                text = event.message,
+                                badge = "MIC"
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            speechState.collect { st ->
+                when (st) {
+                    is SpeechUiState.Listening -> {
+                        if (!isSpeaking.value) {
+                            _moodState.value = SaraMoodState.LISTENING
+                        }
+                    }
+                    is SpeechUiState.Idle -> {
+                        if (_moodState.value == SaraMoodState.LISTENING) {
+                            _moodState.value = SaraMoodState.IDLE
+                        }
+                    }
+                    is SpeechUiState.Error -> {
+                        if (_moodState.value == SaraMoodState.LISTENING) {
+                            _moodState.value = SaraMoodState.IDLE
+                        }
+                    }
                 }
             }
         }
@@ -227,29 +344,18 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVoiceListening() {
         ttsManager.stop()
-        speechManager.clearError()
+        VoiceServiceBus.clearError()
         _moodState.value = SaraMoodState.LISTENING
-        val lang = preferences.value.languageCode
-        speechManager.startListening(
-            languageCode = lang,
-            onFinalResult = { spoken ->
-                processUserCommand(spoken, fromVoice = true)
-            },
-            onError = { errMsg ->
-                _moodState.value = SaraMoodState.IDLE
-                appendBubble(
-                    ConversationBubble(
-                        isUser = false,
-                        text = errMsg,
-                        badge = "MIC"
-                    )
-                )
-            }
+        val prefs = preferences.value
+        VoiceListeningService.startListening(
+            context = getApplication(),
+            languageCode = prefs.languageCode,
+            continuous = prefs.continuousListening
         )
     }
 
     fun stopVoiceListening() {
-        speechManager.stopListening()
+        VoiceListeningService.stopListening(getApplication())
         if (_moodState.value == SaraMoodState.LISTENING) {
             _moodState.value = SaraMoodState.IDLE
         }
@@ -455,19 +561,42 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
                         "The answer for ${parsed.expression} is $formattedAns."
                     }
                 }
+                is ParsedSaraIntent.ExpressEmotion -> {
+                    category = "EXPRESSION"
+                    actionSummary = "Expression: ${parsed.emotion}"
+                    replyText = when (parsed.emotion) {
+                        "LOVE" -> if (isBengali) "আমিও আপনাকে অনেক ভালোবাসি ${prefs.userName}! 💖" else "I love you too, ${prefs.userName}! 💖"
+                        "ANGRY" -> if (isBengali) "হুম! রাগ করে দিলাম কিন্তু — তাড়াতাড়ি মন ভালো করে দিন! 😠" else "Hmph! Now I'm mad — cheer me up!"
+                        "WAVE_HI" -> if (isBengali) "হাই ${prefs.userName}! বলুন আজ কী সাহায্য করতে পারি?" else "Hi ${prefs.userName}! How can I help today?"
+                        else -> if (isBengali) "ইয়ে! চলুন দারুণ কিছু করি আজ! ✨" else "Yay! Ready to have a great day!"
+                    }
+                }
                 is ParsedSaraIntent.GenerativeAiQuery -> {
-                    val history = _messages.value.takeLast(6).map { ChatTurn(it.isUser, it.text) }
+                    val history = _messages.value.dropLast(1).takeLast(8).map { ChatTurn(it.isUser, it.text) }
+                    val streamBubbleId = System.nanoTime()
+                    appendBubble(
+                        ConversationBubble(
+                            id = streamBubbleId,
+                            isUser = false,
+                            text = if (isBengali) "চিন্তা করছি…" else "Thinking…",
+                            badge = "GEMINI"
+                        )
+                    )
                     val aiResult = aiRepo.generateAssistantReply(
                         prompt = parsed.prompt,
                         userName = prefs.userName,
                         languageCode = prefs.languageCode,
-                        history = history
+                        history = history,
+                        onStreamingChunk = { partialText ->
+                            updateBubbleText(streamBubbleId, partialText, "GEMINI")
+                        }
                     )
                     replyText = aiResult.replyText
                     isSampleAi = aiResult.isSampleMode
-                    status = if (isSampleAi) "SAMPLE_AI" else "EXECUTED"
-                    category = "AI_CHAT"
-                    actionSummary = if (isSampleAi) "Sample AI reply" else "Gemini AI reply"
+                    status = if (aiResult.isError) "ERROR" else "EXECUTED"
+                    category = if (aiResult.isError) "AI_ERROR" else "GEMINI"
+                    actionSummary = if (aiResult.isError) "Gemini AI error" else "Gemini AI reply"
+                    updateBubbleText(streamBubbleId, replyText, category)
                 }
             }
 
@@ -486,20 +615,37 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
 
-            appendBubble(
-                ConversationBubble(
-                    isUser = false,
-                    text = replyText,
-                    badge = category,
-                    isSampleAi = isSampleAi
+            if (parsed !is ParsedSaraIntent.GenerativeAiQuery) {
+                appendBubble(
+                    ConversationBubble(
+                        isUser = false,
+                        text = replyText,
+                        badge = category,
+                        isSampleAi = isSampleAi
+                    )
                 )
-            )
+            }
 
-            _moodState.value = SaraMoodState.ACTION_SUCCESS
+            val nextMood = when (parsed) {
+                is ParsedSaraIntent.ExpressEmotion -> when (parsed.emotion) {
+                    "LOVE" -> SaraMoodState.LOVE
+                    "ANGRY" -> SaraMoodState.ANGRY
+                    "WAVE_HI" -> SaraMoodState.WAVE_HI
+                    else -> SaraMoodState.ACTION_SUCCESS
+                }
+                else -> SaraMoodState.ACTION_SUCCESS
+            }
+
+            if (nextMood in setOf(SaraMoodState.LOVE, SaraMoodState.ANGRY, SaraMoodState.WAVE_HI)) {
+                holdExpressionMood(nextMood, durationMs = 4200L)
+            } else {
+                _moodState.value = nextMood
+            }
+
             if (prefs.speakResponses) {
                 ttsManager.speak(replyText, prefs.languageCode)
-            } else {
-                kotlinx.coroutines.delay(900L)
+            } else if (nextMood == SaraMoodState.ACTION_SUCCESS) {
+                kotlinx.coroutines.delay(1400L)
                 if (_moodState.value == SaraMoodState.ACTION_SUCCESS) {
                     _moodState.value = SaraMoodState.IDLE
                 }
@@ -730,7 +876,24 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
     // Settings updates
     fun updateUserName(name: String) = viewModelScope.launch { prefsRepo.setUserName(name) }
     fun updateLanguage(code: String) = viewModelScope.launch { prefsRepo.setLanguageCode(code) }
+    fun updateVoiceTone(toneId: String) = viewModelScope.launch { prefsRepo.setVoiceTonePreset(toneId) }
+    fun updatePreferredTtsVoice(voiceName: String) = viewModelScope.launch { prefsRepo.setPreferredTtsVoiceName(voiceName) }
+    fun testMayaVoice() {
+        ttsManager.testMayaVoice(preferences.value.languageCode)
+    }
+    fun startOverlayMode() {
+        OverlayAssistantService.startOverlay(getApplication())
+    }
+    fun stopOverlayMode() {
+        OverlayAssistantService.stopOverlay(getApplication())
+    }
     fun updateSpeakResponses(enabled: Boolean) = viewModelScope.launch { prefsRepo.setSpeakResponses(enabled) }
+    fun updateContinuousListening(enabled: Boolean) = viewModelScope.launch {
+        prefsRepo.setContinuousListening(enabled)
+        if (!enabled && isVoiceServiceRunning.value) {
+            VoiceListeningService.stopListening(getApplication())
+        }
+    }
     fun updateVoiceLock(enabled: Boolean) = viewModelScope.launch { prefsRepo.setVoiceLockEnabled(enabled) }
     fun updateShaderStyle(id: String) = viewModelScope.launch { prefsRepo.setShaderStyle(id) }
     fun updateDarkTheme(dark: Boolean) = viewModelScope.launch { prefsRepo.setDarkTheme(dark) }
@@ -739,9 +902,17 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
         _messages.value = (_messages.value + bubble).takeLast(30)
     }
 
+    private fun updateBubbleText(id: Long, newText: String, badge: String) {
+        _messages.value = _messages.value.map { bubble ->
+            if (bubble.id == id) bubble.copy(text = newText, badge = badge) else bubble
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
-        speechManager.stopListening()
+        if (!preferences.value.continuousListening) {
+            VoiceListeningService.stopListening(getApplication())
+        }
         ttsManager.shutdown()
     }
 }

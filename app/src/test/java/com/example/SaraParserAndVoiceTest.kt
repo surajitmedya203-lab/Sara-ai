@@ -2,7 +2,11 @@ package com.example
 
 import com.example.actions.ParsedSaraIntent
 import com.example.actions.SaraCommandParser
+import com.example.voice.FemaleVoiceSelector
+import com.example.voice.SpeechUiState
 import com.example.voice.VoiceFingerprint
+import com.example.voice.VoiceServiceBus
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,5 +52,35 @@ class SaraParserAndVoiceTest {
         val restored = VoiceFingerprint.fromJson(json)
         assertEquals(145.0, restored!!.pitchHz, 0.01)
         assertEquals(6, restored.bandRatios.size)
+    }
+
+    @Test
+    fun voiceServiceBusUpdatesAndClearsErrors() {
+        VoiceServiceBus.updateSpeechState(SpeechUiState.Error("Mic unavailable"))
+        assertTrue(VoiceServiceBus.speechState.value is SpeechUiState.Error)
+        VoiceServiceBus.clearError()
+        assertEquals(SpeechUiState.Idle, VoiceServiceBus.speechState.value)
+    }
+
+    @Test
+    fun femaleVoiceSelectorPrefersFemaleAndCleansMarkdown() {
+        val femaleScore = FemaleVoiceSelector.scoreVoice(
+            voiceName = "bn-bd-x-ban-local",
+            localeTag = "bn-BD",
+            features = setOf("gender=female"),
+            isNetwork = false,
+            targetLocale = Locale("bn", "BD")
+        )
+        val maleScore = FemaleVoiceSelector.scoreVoice(
+            voiceName = "bn-bd-x-bab-local",
+            localeTag = "bn-BD",
+            features = setOf("gender=male"),
+            isNetwork = false,
+            targetLocale = Locale("bn", "BD")
+        )
+        assertTrue(femaleScore > maleScore)
+
+        val cleaned = FemaleVoiceSelector.cleanSpeechText("**হাই!** `সারা` এখন প্রস্তুত।")
+        assertEquals("হাই! সারা এখন প্রস্তুত।", cleaned)
     }
 }

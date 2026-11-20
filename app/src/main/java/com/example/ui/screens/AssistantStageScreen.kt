@@ -1,15 +1,18 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,9 +46,7 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryStd
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -68,7 +69,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -83,7 +83,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.ui.components.ReactiveMicOrbButton
 import com.example.ui.components.Sara3DCharacter
+import com.example.ui.components.VoiceWaveformStrip
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.SaraShaderStyle
 import com.example.viewmodel.ConversationBubble
@@ -104,6 +106,8 @@ fun AssistantStageScreen(
     val micRms by viewModel.micRmsLevel.collectAsStateWithLifecycle()
     val ttsMouth by viewModel.ttsMouthAmplitude.collectAsStateWithLifecycle()
     val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
+    val isVoiceServiceRunning by viewModel.isVoiceServiceRunning.collectAsStateWithLifecycle()
+    val isOverlayRunning by viewModel.isOverlayRunning.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val telemetry by viewModel.telemetry.collectAsStateWithLifecycle()
     val needsContactPerm by viewModel.needsContactPermissionPrompt.collectAsStateWithLifecycle()
@@ -118,6 +122,14 @@ fun AssistantStageScreen(
     ) { granted ->
         if (granted) {
             viewModel.startVoiceListening()
+        }
+    }
+
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (Settings.canDrawOverlays(context)) {
+            viewModel.startOverlayMode()
         }
     }
 
@@ -140,7 +152,7 @@ fun AssistantStageScreen(
     }
 
     val onMicTap: () -> Unit = {
-        if (speechState is SpeechUiState.Listening) {
+        if (speechState is SpeechUiState.Listening || isVoiceServiceRunning) {
             viewModel.stopVoiceListening()
         } else {
             val hasMic = ContextCompat.checkSelfPermission(
@@ -220,14 +232,84 @@ fun AssistantStageScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "SARA 3D",
+                                text = "MAYA 3D",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
 
-                    if (prefs.isVoiceEnrolled) {
+                    Surface(
+                        color = if (isOverlayRunning) {
+                            EmeraldPulse.copy(alpha = 0.22f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f)
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                if (isOverlayRunning) {
+                                    viewModel.stopOverlayMode()
+                                } else if (Settings.canDrawOverlays(context)) {
+                                    viewModel.startOverlayMode()
+                                } else {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    overlayPermissionLauncher.launch(intent)
+                                }
+                            }
+                            .testTag("overlay_toggle_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureInPictureAlt,
+                                contentDescription = "Display over other apps",
+                                tint = if (isOverlayRunning) EmeraldPulse else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (isOverlayRunning) "Overlay On" else "Overlay",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isOverlayRunning) EmeraldPulse else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (isVoiceServiceRunning) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable { viewModel.stopVoiceListening() }
+                                .testTag("voice_service_status_chip")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(EmeraldPulse)
+                                )
+                                Text(
+                                    text = "Service Live",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    } else if (prefs.isVoiceEnrolled) {
                         Surface(
                             color = EmeraldPulse.copy(alpha = 0.16f),
                             shape = RoundedCornerShape(20.dp)
@@ -357,11 +439,11 @@ fun AssistantStageScreen(
                 }
             }
 
-            // Interactive 3D Sara Hologram Stage
+            // Interactive Full-Body 3D Maya/Sara Hologram Stage
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isWideScreen) 290.dp else 255.dp),
+                    .height(if (isWideScreen) 335.dp else 305.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Sara3DCharacter(
@@ -383,7 +465,10 @@ fun AssistantStageScreen(
                     else -> when (moodState) {
                         SaraMoodState.THINKING -> if (prefs.languageCode.startsWith("bn")) "প্রসেস করছি..." else "Thinking..."
                         SaraMoodState.SPEAKING -> if (prefs.languageCode.startsWith("bn")) "সারা কথা বলছে..." else "Speaking..."
-                        SaraMoodState.ACTION_SUCCESS -> if (prefs.languageCode.startsWith("bn")) "কাজ সম্পন্ন" else "Done"
+                        SaraMoodState.WAVE_HI -> if (prefs.languageCode.startsWith("bn")) "হাই! হাত নেড়ে স্বাগত জানাচ্ছে 👋" else "Waving Hi! 👋"
+                        SaraMoodState.LOVE -> if (prefs.languageCode.startsWith("bn")) "ভালোবাসা পাঠাচ্ছে 💖" else "Sending Love 💖"
+                        SaraMoodState.ANGRY -> if (prefs.languageCode.startsWith("bn")) "রাগ করেছে! 😠" else "Feeling Angry! 😠"
+                        SaraMoodState.ACTION_SUCCESS -> if (prefs.languageCode.startsWith("bn")) "খুশি হয়ে নাচছে ✨" else "Happy Dance! ✨"
                         else -> if (prefs.languageCode.startsWith("bn")) "ট্যাপ করে কথা বলুন • ড্র্যাগ করে 3D ঘোরান" else "Tap to speak • Drag to rotate 3D"
                     }
                 }
@@ -393,7 +478,7 @@ fun AssistantStageScreen(
                     shape = RoundedCornerShape(20.dp),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 4.dp)
+                        .padding(bottom = 2.dp)
                         .border(
                             1.dp,
                             MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
@@ -411,6 +496,52 @@ fun AssistantStageScreen(
                 }
             }
 
+            // Interactive 3D Character Expression Controls (Hi, Love, Angry, Happy)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+            ) {
+                val isBn = prefs.languageCode.startsWith("bn")
+                val expressionChips = listOf(
+                    Triple(SaraMoodState.WAVE_HI, if (isBn) "👋 হাই" else "👋 Hi", "expr_wave_button"),
+                    Triple(SaraMoodState.LOVE, if (isBn) "💖 ভালোবাসা" else "💖 Love", "expr_love_button"),
+                    Triple(SaraMoodState.ANGRY, if (isBn) "😠 রাগ" else "😠 Angry", "expr_angry_button"),
+                    Triple(SaraMoodState.ACTION_SUCCESS, if (isBn) "✨ নাচো" else "✨ Happy", "expr_happy_button")
+                )
+                expressionChips.forEach { (targetMood, label, tag) ->
+                    val selected = moodState == targetMood
+                    AssistChip(
+                        onClick = { viewModel.triggerCharacterExpression(targetMood) },
+                        label = {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (selected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f)
+                            }
+                        ),
+                        border = AssistChipDefaults.assistChipBorder(
+                            enabled = true,
+                            borderColor = if (selected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                            }
+                        ),
+                        modifier = Modifier.testTag(tag)
+                    )
+                }
+            }
+
             // Conversation Bubbles
             LazyColumn(
                 state = listState,
@@ -422,6 +553,64 @@ fun AssistantStageScreen(
             ) {
                 items(messages, key = { it.id }) { bubble ->
                     ChatBubbleItem(bubble = bubble)
+                }
+            }
+
+            // Live Microphone / Voice Input Volume Waveform Banner
+            val isListeningActive = speechState is SpeechUiState.Listening
+            AnimatedVisibility(
+                visible = isListeningActive || isSpeaking,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .border(
+                            1.dp,
+                            shaderStyle.primaryColor.copy(alpha = 0.45f),
+                            RoundedCornerShape(18.dp)
+                        )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = when {
+                                    isListeningActive -> {
+                                        val partial = (speechState as? SpeechUiState.Listening)?.partialText.orEmpty()
+                                        if (partial.isNotBlank()) "\"$partial\""
+                                        else if (prefs.languageCode.startsWith("bn")) "মাইক্রোফোন শুনছে..." else "Listening to voice input..."
+                                    }
+                                    else -> if (prefs.languageCode.startsWith("bn")) "সারা কথা বলছে..." else "Sara speaking..."
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (isListeningActive) shaderStyle.accentColor else MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "${(liveAudioAmp * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        VoiceWaveformStrip(
+                            audioLevel = liveAudioAmp,
+                            isActive = isListeningActive || isSpeaking,
+                            shaderStyle = shaderStyle
+                        )
+                    }
                 }
             }
 
@@ -544,9 +733,11 @@ fun AssistantStageScreen(
                         .testTag("command_input")
                 )
 
-                MicOrbButton(
+                ReactiveMicOrbButton(
                     isListening = speechState is SpeechUiState.Listening,
                     isSpeaking = isSpeaking,
+                    audioLevel = liveAudioAmp,
+                    shaderStyle = shaderStyle,
                     onClick = {
                         if (isSpeaking) {
                             viewModel.ttsManager.stop()
@@ -620,51 +811,5 @@ private fun ChatBubbleItem(bubble: ConversationBubble) {
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun MicOrbButton(
-    isListening: Boolean,
-    isSpeaking: Boolean,
-    onClick: () -> Unit
-) {
-    val infinite = rememberInfiniteTransition(label = "micPulse")
-    val pulseScale by infinite.animateFloat(
-        initialValue = 1f,
-        targetValue = if (isListening) 1.14f else 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 700),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseScale"
-    )
-
-    val orbBrush = when {
-        isListening -> Brush.linearGradient(listOf(Color(0xFF00F5D4), Color(0xFF38BDF8)))
-        isSpeaking -> Brush.linearGradient(listOf(Color(0xFFFB7185), Color(0xFF8B5CF6)))
-        else -> Brush.linearGradient(listOf(Color(0xFF38BDF8), Color(0xFF8B5CF6)))
-    }
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(62.dp)
-            .scale(pulseScale)
-            .clip(CircleShape)
-            .background(orbBrush)
-            .clickable(onClick = onClick)
-            .testTag("mic_button")
-    ) {
-        Icon(
-            imageVector = when {
-                isListening -> Icons.Default.MicOff
-                isSpeaking -> Icons.Default.Stop
-                else -> Icons.Default.Mic
-            },
-            contentDescription = stringResource(id = R.string.mic_content_desc),
-            tint = Color(0xFF03101F),
-            modifier = Modifier.size(28.dp)
-        )
     }
 }

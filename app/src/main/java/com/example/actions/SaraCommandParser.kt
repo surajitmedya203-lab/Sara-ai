@@ -33,6 +33,7 @@ sealed interface ParsedSaraIntent {
     data object ReadTimeDate : ParsedSaraIntent
     data object ReadStorageNetwork : ParsedSaraIntent
     data class CalculateMath(val expression: String, val answer: Double) : ParsedSaraIntent
+    data class ExpressEmotion(val emotion: String) : ParsedSaraIntent
     data class GenerativeAiQuery(val prompt: String) : ParsedSaraIntent
 }
 
@@ -207,12 +208,26 @@ object SaraCommandParser {
             return ParsedSaraIntent.ReadStorageNetwork
         }
 
-        // 17. Simple Math
+        // 17. Expressive 3D Character Emotions & Gestures (Hi, Love, Angry, Happy/Dance)
+        if (lower.containsAny("ভালোবাসি", "ভালবাসি", "ভালোবাসা", "লাভ ইউ", "love you", "i love", "kiss", "তুমি খুব সুন্দর", "কিউট")) {
+            return ParsedSaraIntent.ExpressEmotion("LOVE")
+        }
+        if (lower.containsAny("রাগ করো", "রাগ দেখাও", "রাগ করে", "রাগ", "পঁচা", "পচা", "angry", "be angry", "get mad")) {
+            return ParsedSaraIntent.ExpressEmotion("ANGRY")
+        }
+        if (lower.containsAny("হাই", "হ্যালো", "হেলো", "হাত নাড়", "হাত নাড়", "wave", "say hi", "hello", "hey sara") || lower == "hi") {
+            return ParsedSaraIntent.ExpressEmotion("WAVE_HI")
+        }
+        if (lower.containsAny("নাচো", "ড্যান্স", "খুশি হও", "dance", "celebrate", "happy")) {
+            return ParsedSaraIntent.ExpressEmotion("HAPPY")
+        }
+
+        // 18. Simple Math
         tryEvaluateMath(text)?.let { (expr, result) ->
             return ParsedSaraIntent.CalculateMath(expr, result)
         }
 
-        // 18. Fallback -> AiRepository
+        // 19. Fallback -> AiRepository
         return ParsedSaraIntent.GenerativeAiQuery(text)
     }
 
