@@ -28,4 +28,17 @@
     <string name="overlay_toggle_desc">অন্য যেকোনো অ্যাপের ওপর ভাসমান মায়া বাবল ও ভয়েস অ্যাসিস্ট্যান্ট চালু করুন</string>
     <string name="maya_voice_title">Maya Female Voice (মেয়ে কণ্ঠ)</string>
     <string name="maya_voice_desc">মায়ার কথা বলার মিষ্টি মেয়ে কণ্ঠ ও টোন বেছে নিন</string>
+    <string name="accessibility_service_label">Sara / Maya Assistant</string>
+    <string name="accessibility_service_desc">Lets Maya type your spoken dictation into focused input boxes across apps and read visible non-password screen content only when you tap Look Screen.</string>
+    <string name="accessibility_card_title">Cross-App Typing &amp; Screen View</string>
+    <string name="accessibility_card_desc">সব অ্যাপে কথা বলে টাইপ করতে ও স্ক্রিন দেখাতে Accessibility চালু করুন (পাসওয়ার্ড কখনো পড়া হয় না)</string>
+    <string name="screen_share_channel_name">Live Screen Share</string>
+    <string name="screen_share_channel_desc">Shows when Maya is actively receiving your shared phone screen</string>
+    <string name="screen_share_notif_title">Maya Screen Share Active</string>
+    <string name="screen_share_notif_text">Maya can see your live screen to help when you ask</string>
+    <string name="screen_share_stop_action">Stop Share</string>
+    <string name="screen_share_toggle_title">Live Screen Share</string>
+    <string name="screen_share_toggle_desc">মায়ার সাথে লাইভ স্ক্রিন শেয়ার করুন যাতে যেকোনো অ্যাপ বা ভিডিও দেখে সাহায্য করতে পারে</string>
+    <string name="edge_glow_toggle_title">AI Screen Edge Glow</string>
+    <string name="edge_glow_toggle_desc">স্ক্রিনের চারপাশে নিয়োন অ্যানিমেটেড এডজ গ্লো আলো দেখান (অ্যাপ ও ওভারলে দুটোতেই)</string>
 </resources>

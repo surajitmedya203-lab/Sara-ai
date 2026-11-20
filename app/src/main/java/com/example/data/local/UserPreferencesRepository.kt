@@ -26,6 +26,7 @@ data class SaraPreferences(
     val lastMatchScore: Int = 0,
     val shaderStyleId: String = "HOLOGRAM_CYAN",
     val darkTheme: Boolean = true,
+    val edgeGlowEnabled: Boolean = true,
     val seededDefaults: Boolean = false
 )
 
@@ -44,6 +45,7 @@ class UserPreferencesRepository(private val context: Context) {
         val LAST_MATCH_SCORE = intPreferencesKey("last_match_score")
         val SHADER_STYLE_ID = stringPreferencesKey("shader_style_id")
         val DARK_THEME = booleanPreferencesKey("dark_theme")
+        val EDGE_GLOW_ENABLED = booleanPreferencesKey("edge_glow_enabled")
         val SEEDED_DEFAULTS = booleanPreferencesKey("seeded_defaults")
     }
 
@@ -61,6 +63,7 @@ class UserPreferencesRepository(private val context: Context) {
             lastMatchScore = prefs[Keys.LAST_MATCH_SCORE] ?: 0,
             shaderStyleId = prefs[Keys.SHADER_STYLE_ID] ?: "HOLOGRAM_CYAN",
             darkTheme = prefs[Keys.DARK_THEME] ?: true,
+            edgeGlowEnabled = prefs[Keys.EDGE_GLOW_ENABLED] ?: true,
             seededDefaults = prefs[Keys.SEEDED_DEFAULTS] ?: false
         )
     }
@@ -120,6 +123,10 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setDarkTheme(dark: Boolean) {
         context.saraDataStore.edit { it[Keys.DARK_THEME] = dark }
+    }
+
+    suspend fun setEdgeGlowEnabled(enabled: Boolean) {
+        context.saraDataStore.edit { it[Keys.EDGE_GLOW_ENABLED] = enabled }
     }
 
     suspend fun markDefaultsSeeded() {

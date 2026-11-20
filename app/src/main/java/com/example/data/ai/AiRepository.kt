@@ -1,5 +1,6 @@
 package com.example.data.ai
 
+import android.graphics.Bitmap
 import android.util.Log
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
@@ -25,7 +26,7 @@ data class AiReplyResult(
 )
 
 /**
- * Abstraction for open-ended generative AI replies backed by Firebase AI Logic (Gemini).
+ * Abstraction for open-ended generative AI & multimodal screen understanding backed by Gemini.
  */
 interface AiRepository {
     suspend fun generateAssistantReply(
@@ -33,6 +34,16 @@ interface AiRepository {
         userName: String,
         languageCode: String,
         history: List<ChatTurn>,
+        onStreamingChunk: (suspend (String) -> Unit)? = null
+    ): AiReplyResult
+
+    suspend fun analyzeScreenWithGemini(
+        userPrompt: String,
+        screenBitmap: Bitmap?,
+        screenTextSummary: String,
+        activePackageName: String,
+        userName: String,
+        languageCode: String,
         onStreamingChunk: (suspend (String) -> Unit)? = null
     ): AiReplyResult
 }
@@ -122,8 +133,87 @@ class FirebaseAiRepository : AiRepository {
         }
     }
 
+    override suspend fun analyzeScreenWithGemini(
+        userPrompt: String,
+        screenBitmap: Bitmap?,
+        screenTextSummary: String,
+        activePackageName: String,
+        userName: String,
+        languageCode: String,
+        onStreamingChunk: (suspend (String) -> Unit)?
+    ): AiReplyResult {
+        val prefersBengali = languageCode.startsWith("bn") || userPrompt.any { it in '\u0980'..'\u09FF' }
+        val langHint = if (prefersBengali) "Bengali" else "English"
+
+        if (screenBitmap == null && screenTextSummary.isBlank()) {
+            val noAccessMsg = if (prefersBengali) {
+                "স্ক্রিন দেখার জন্য কোনো তথ্য পাওয়া যায়নি। আগে Maya Accessibility সার্ভিস অন করুন।"
+            } else {
+                "No screen content captured. Please enable Maya Accessibility service first."
+            }
+            return AiReplyResult(replyText = noAccessMsg, isSampleMode = false, isError = true)
+        }
+
+        val promptInstruction = buildString {
+            append("[User name: $userName | Preferred language: $langHint]\n")
+            if (activePackageName.isNotBlank()) {
+                append("Active app package: $activePackageName\n")
+            }
+            if (screenTextSummary.isNotBlank()) {
+                append("Visible screen text:\n$screenTextSummary\n\n")
+            }
+            append("User request about their phone screen: $userPrompt\n")
+            append("Explain clearly and concisely what is on their screen and help with what they asked.")
+        }
+
+        return try {
+            val accumulated = StringBuilder()
+            withTimeout(AI_TIMEOUT_MS) {
+                val inputContent = content {
+                    if (screenBitmap != null) {
+                        image(screenBitmap)
+                    }
+                    text(promptInstruction)
+                }
+                model.generateContentStream(inputContent).collect { chunk ->
+                    val piece = chunk.text.orEmpty()
+                    if (piece.isNotEmpty()) {
+                        accumulated.append(piece)
+                        onStreamingChunk?.invoke(accumulated.toString())
+                    }
+                }
+            }
+            val finalText = accumulated.toString().trim()
+            if (finalText.isNotBlank()) {
+                AiReplyResult(replyText = finalText, isSampleMode = false, isError = false)
+            } else {
+                AiReplyResult(
+                    replyText = if (prefersBengali) "স্ক্রিন বিশ্লেষণ করা যায়নি।" else "Could not analyze screen.",
+                    isSampleMode = false,
+                    isError = true
+                )
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Gemini screen analysis timed out", e)
+            AiReplyResult(
+                replyText = if (prefersBengali) "স্ক্রিন বিশ্লেষণে সময় বেশি লাগছে।" else "Screen analysis timed out.",
+                isSampleMode = false,
+                isError = true
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini screen analysis failed", e)
+            val detail = e.localizedMessage?.takeIf { it.isNotBlank() } ?: "Unknown error"
+            AiReplyResult(
+                replyText = if (prefersBengali) "স্ক্রিন বিশ্লেষণে সমস্যা হয়েছে: $detail" else "Screen analysis failed: $detail",
+                isSampleMode = false,
+                isError = true
+            )
+        }
+    }
+
     private fun buildAlternatingHistory(history: List<ChatTurn>) = buildList {
-        // Ensure Gemini chat history starts with a user turn and alternates cleanly without the current prompt duplicated
         val trimmed = history.filter { it.text.isNotBlank() }.dropLastWhile { it.isUser }
         var expectedUser = true
         for (turn in trimmed) {
@@ -136,7 +226,6 @@ class FirebaseAiRepository : AiRepository {
                 expectedUser = !expectedUser
             }
         }
-        // History passed to startChat should end on a model turn so the next sendMessage is a user turn
         if (size % 2 == 1) {
             removeAt(lastIndex)
         }

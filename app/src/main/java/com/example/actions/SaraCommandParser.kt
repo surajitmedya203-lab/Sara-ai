@@ -34,6 +34,9 @@ sealed interface ParsedSaraIntent {
     data object ReadStorageNetwork : ParsedSaraIntent
     data class CalculateMath(val expression: String, val answer: Double) : ParsedSaraIntent
     data class ExpressEmotion(val emotion: String) : ParsedSaraIntent
+    data object InspectScreen : ParsedSaraIntent
+    data class TypeDictatedText(val textToType: String) : ParsedSaraIntent
+    data class ToggleScreenShare(val enable: Boolean) : ParsedSaraIntent
     data class GenerativeAiQuery(val prompt: String) : ParsedSaraIntent
 }
 
@@ -185,6 +188,25 @@ object SaraCommandParser {
                 .replace(Regex("(?i)(সারা|sara|গুগলে সার্চ করো|সার্চ করো|গুগল করো|খুঁজে দাও|search for|google|search)"), "")
                 .trim()
             return ParsedSaraIntent.WebSearch(query.ifBlank { text })
+        }
+
+        // 14b. Live Screen Share, Screen Inspect & Cross-App Dictation (checked before OpenApp)
+        if (lower.containsAny("স্ক্রিন শেয়ার", "স্ক্রিন শেয়ার", "screen share", "share screen", "share my screen")) {
+            val stop = lower.containsAny("বন্ধ", "অফ", "থামা", "stop", "off", "disable", "end")
+            return ParsedSaraIntent.ToggleScreenShare(!stop)
+        }
+        if (lower.containsAny("স্ক্রিন দেখো", "স্ক্রিনে কী", "স্ক্রিনে কি", "পর্দায় কী", "পর্দায় কী", "look at screen", "what's on my screen", "read screen", "see my screen")) {
+            return ParsedSaraIntent.InspectScreen
+        }
+        if (lower.startsWith("টাইপ করো") || lower.startsWith("লিখে দাও") || lower.startsWith("লেখো ") ||
+            lower.startsWith("type ") || lower.startsWith("dictate ")
+        ) {
+            val contentToType = text
+                .replace(Regex("(?i)^(টাইপ করো|লিখে দাও|লেখো|type|dictate)\\s*"), "")
+                .trim()
+            if (contentToType.isNotBlank()) {
+                return ParsedSaraIntent.TypeDictatedText(contentToType)
+            }
         }
 
         // 15. Open App

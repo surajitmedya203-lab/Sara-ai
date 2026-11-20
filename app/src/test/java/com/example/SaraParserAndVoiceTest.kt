@@ -83,4 +83,21 @@ class SaraParserAndVoiceTest {
         val cleaned = FemaleVoiceSelector.cleanSpeechText("**হাই!** `সারা` এখন প্রস্তুত।")
         assertEquals("হাই! সারা এখন প্রস্তুত।", cleaned)
     }
+
+    @Test
+    fun parsesScreenInspectAndDictationIntents() {
+        assertEquals(ParsedSaraIntent.InspectScreen, SaraCommandParser.parse("আমার স্ক্রিনে কী লেখা আছে দেখো"))
+        assertEquals(ParsedSaraIntent.InspectScreen, SaraCommandParser.parse("What's on my screen"))
+
+        val typeBn = SaraCommandParser.parse("টাইপ করো কেমন আছো বন্ধু")
+        assertEquals(ParsedSaraIntent.TypeDictatedText("কেমন আছো বন্ধু"), typeBn)
+
+        val typeEn = SaraCommandParser.parse("type Hello everyone")
+        assertEquals(ParsedSaraIntent.TypeDictatedText("Hello everyone"), typeEn)
+
+        assertEquals(ParsedSaraIntent.ToggleScreenShare(true), SaraCommandParser.parse("স্ক্রিন শেয়ার চালু করো"))
+        assertEquals(ParsedSaraIntent.ToggleScreenShare(true), SaraCommandParser.parse("Please share my screen"))
+        assertEquals(ParsedSaraIntent.ToggleScreenShare(false), SaraCommandParser.parse("স্ক্রিন শেয়ার বন্ধ করো"))
+        assertEquals(ParsedSaraIntent.ToggleScreenShare(false), SaraCommandParser.parse("Stop screen share"))
+    }
 }

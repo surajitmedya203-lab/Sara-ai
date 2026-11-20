@@ -27,12 +27,17 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.accessibility.SaraAccessibilityService
 import com.example.actions.DeviceActionExecutor
 import com.example.actions.ParsedSaraIntent
 import com.example.actions.SaraCommandParser
 import com.example.data.ai.FirebaseAiRepository
+import com.example.data.local.MemoryNoteEntity
+import com.example.data.local.PersonalTaskEntity
 import com.example.data.local.SaraDatabase
 import com.example.data.local.UserPreferencesRepository
+import com.example.screenshare.ScreenShareConsentActivity
+import com.example.screenshare.ScreenShareService
 import com.example.voice.SaraSpeechManager
 import com.example.voice.SaraTtsManager
 import com.example.voice.SpeechUiState
@@ -40,19 +45,30 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.coroutines.resume
 import kotlin.math.abs
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 private const val TAG = "OverlayAssistantService"
 
+private enum class OverlayListenMode {
+    COMMAND,
+    DICTATE_TO_APP
+}
+
 /**
  * Floating Display-Over-Other-Apps ("SYSTEM_ALERT_WINDOW") assistant bubble & expandable Maya card.
- * Allows users to drag Maya over any app, tap to expand, speak commands or ask Gemini, and hear
- * Maya respond in her female voice without leaving the current app.
+ * Supports:
+ * - Dragging over any external app
+ * - Voice Typing ("Dictate"): listens and types spoken words directly into the focused input field
+ * - Look at Screen ("See Screen"): captures screen screenshot + visible text and uses Gemini 3.8 Flash
+ * - Voice commands & live Gemini chat in Maya's female voice
  */
 class OverlayAssistantService : Service() {
 
@@ -105,8 +121,12 @@ class OverlayAssistantService : Service() {
     private var replyBodyView: TextView? = null
     private var characterPreviewView: ImageView? = null
     private var micButtonView: Button? = null
+    private var dictateButtonView: Button? = null
+    private var screenShareButtonView: Button? = null
+    private var accessibilityBannerBtn: Button? = null
 
     private var isExpanded = false
+    private var listenMode = OverlayListenMode.COMMAND
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -119,6 +139,7 @@ class OverlayAssistantService : Service() {
 
         serviceScope.launch {
             prefsRepo.preferences.collect { prefs ->
+                EdgeGlowController.setUserPreference(this@OverlayAssistantService, prefs.edgeGlowEnabled)
                 ttsManager?.applyVoiceConfig(
                     toneId = prefs.voiceTonePreset,
                     preferredVoice = prefs.preferredTtsVoiceName,
@@ -133,22 +154,59 @@ class OverlayAssistantService : Service() {
             speechManager?.state?.collect { st ->
                 when (st) {
                     is SpeechUiState.Listening -> {
+                        EdgeGlowController.updateMode(EdgeGlowMode.LISTENING)
                         val partial = st.partialText
-                        statusTitleView?.text = if (partial.isNotBlank()) "\"$partial\"" else "শুনছি… বলুন"
-                        micButtonView?.text = "থামান (Stop)"
+                        statusTitleView?.text = when {
+                            partial.isNotBlank() -> "\"$partial\""
+                            listenMode == OverlayListenMode.DICTATE_TO_APP -> "বলুন, টাইপ করছি…"
+                            else -> "শুনছি… বলুন"
+                        }
+                        if (listenMode == OverlayListenMode.DICTATE_TO_APP) {
+                            dictateButtonView?.text = "⏹️ থামান"
+                        } else {
+                            micButtonView?.text = "⏹️ থামান"
+                        }
                     }
                     is SpeechUiState.Error -> {
+                        EdgeGlowController.updateMode(
+                            if (ScreenShareService.isScreenSharing.value) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+                        )
                         statusTitleView?.text = st.message
-                        micButtonView?.text = "🎤 বলুন (Speak)"
+                        resetButtonLabels()
                     }
                     SpeechUiState.Idle -> {
-                        micButtonView?.text = "🎤 বলুন (Speak)"
+                        EdgeGlowController.updateMode(
+                            if (ScreenShareService.isScreenSharing.value) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+                        )
+                        resetButtonLabels()
                     }
                 }
             }
         }
 
+        serviceScope.launch {
+            SaraAccessibilityService.isServiceConnected.collect { connected ->
+                accessibilityBannerBtn?.visibility = if (connected) View.GONE else View.VISIBLE
+            }
+        }
+
+        serviceScope.launch {
+            ScreenShareService.isScreenSharing.collect { sharing ->
+                screenShareButtonView?.text = if (sharing) "🛑 শেয়ার বন্ধ" else "📺 শেয়ার"
+                if (speechManager?.state?.value !is SpeechUiState.Listening) {
+                    EdgeGlowController.updateMode(
+                        if (sharing) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+                    )
+                }
+            }
+        }
+
         ensureNotificationChannel()
+    }
+
+    private fun resetButtonLabels() {
+        micButtonView?.text = "🎤 বলুন"
+        dictateButtonView?.text = "⌨️ টাইপ"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -167,6 +225,11 @@ class OverlayAssistantService : Service() {
         if (bubbleView == null) {
             attachFloatingBubble()
         }
+        EdgeGlowController.updateOverlayState(
+            context = this,
+            active = true,
+            mode = if (ScreenShareService.isScreenSharing.value) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+        )
         _isOverlayRunning.value = true
         return START_STICKY
     }
@@ -309,7 +372,7 @@ class OverlayAssistantService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val cardWidth = (300 * dp).toInt()
+        val cardWidth = (316 * dp).toInt()
         val params = WindowManager.LayoutParams(
             cardWidth,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -333,7 +396,7 @@ class OverlayAssistantService : Service() {
             elevation = 14 * dp
         }
 
-        // Header row: Avatar preview + Title + Minimize/Close buttons
+        // Header row: Avatar preview + Title + Minimize/Close
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -344,19 +407,19 @@ class OverlayAssistantService : Service() {
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
         characterPreviewView = avatar
-        header.addView(avatar, LinearLayout.LayoutParams((54 * dp).toInt(), (72 * dp).toInt()))
+        header.addView(avatar, LinearLayout.LayoutParams((52 * dp).toInt(), (68 * dp).toInt()))
 
         val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((10 * dp).toInt(), 0, (6 * dp).toInt(), 0)
+            setPadding((10 * dp).toInt(), 0, (4 * dp).toInt(), 0)
         }
         val title = TextView(this).apply {
-            text = "Maya • Gemini Live"
+            text = "Maya • Screen & Voice"
             setTextColor(AndroidColor.parseColor("#FFF472B6"))
             textSize = 15f
         }
         val statusTv = TextView(this).apply {
-            text = "ট্যাপ করে কথা বলুন"
+            text = "টাইপ, স্ক্রিন দেখা বা Gemini"
             setTextColor(AndroidColor.parseColor("#CBD5E1"))
             textSize = 12f
             maxLines = 1
@@ -383,11 +446,38 @@ class OverlayAssistantService : Service() {
         header.addView(closeBtn, LinearLayout.LayoutParams((42 * dp).toInt(), (42 * dp).toInt()))
         card.addView(header)
 
+        // Optional Accessibility Setup Shortcut Banner if not yet enabled
+        val isAccEnabled = SaraAccessibilityService.isAccessibilityEnabled(this)
+        val accBtn = Button(this).apply {
+            text = "⚠️ সব অ্যাপে টাইপ ও স্ক্রিন দেখার জন্য Accessibility চালু করুন"
+            textSize = 12f
+            setTextColor(AndroidColor.parseColor("#FDE68A"))
+            background = GradientDrawable().apply {
+                cornerRadius = 12 * dp
+                setColor(AndroidColor.parseColor("#33F59E0B"))
+            }
+            visibility = if (isAccEnabled) View.GONE else View.VISIBLE
+            setOnClickListener {
+                detachExpandedPanel()
+                SaraAccessibilityService.openAccessibilitySettings(this@OverlayAssistantService)
+            }
+        }
+        accessibilityBannerBtn = accBtn
+        card.addView(
+            accBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (6 * dp).toInt()
+            }
+        )
+
         // Reply display box
         val replyTv = TextView(this).apply {
-            text = "হাই! আমি যেকোনো অ্যাপের উপর থেকেও আপনার কমান্ড শুনতে ও Gemini দিয়ে উত্তর দিতে পারি।"
+            text = "যেকোনো অ্যাপের লেখার ঘরে ট্যাপ করে '⌨️ টাইপ' চাপলে আপনার কথা সরাসরি লিখে দেবো, আর '👁️ স্ক্রিন' চাপলে আপনার স্ক্রিন দেখে বলে দেবো!"
             setTextColor(AndroidColor.WHITE)
-            textSize = 13.5f
+            textSize = 13f
             val p = (10 * dp).toInt()
             setPadding(p, p, p, p)
             background = GradientDrawable().apply {
@@ -405,17 +495,88 @@ class OverlayAssistantService : Service() {
         }
         card.addView(replyTv, replyLp)
 
-        // Action row: Speak Mic Button + Quick Flash + Open App
-        val controls = LinearLayout(this).apply {
+        // Primary Row: Voice Type into Focused App | Look at Screen
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val dictateBtn = Button(this).apply {
+            text = "⌨️ টাইপ"
+            textSize = 12.5f
+            setTextColor(AndroidColor.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * dp
+                setColor(AndroidColor.parseColor("#059669"))
+            }
+            setOnClickListener {
+                startDictateToFocusedApp()
+            }
+        }
+        dictateButtonView = dictateBtn
+        row1.addView(
+            dictateBtn,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (6 * dp).toInt()
+            }
+        )
+
+        val screenBtn = Button(this).apply {
+            text = "👁️ দেখো"
+            textSize = 12f
+            setTextColor(AndroidColor.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * dp
+                setColor(AndroidColor.parseColor("#7C3AED"))
+            }
+            setOnClickListener {
+                inspectCurrentScreenWithGemini("আমার স্ক্রিনে কী আছে দেখে সংক্ষেপে বলো এবং কী করা যায় জানাও।")
+            }
+        }
+        row1.addView(
+            screenBtn,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (6 * dp).toInt()
+            }
+        )
+
+        val shareBtn = Button(this).apply {
+            text = if (ScreenShareService.isScreenSharing.value) "🛑 শেয়ার বন্ধ" else "📺 শেয়ার"
+            textSize = 12f
+            setTextColor(AndroidColor.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * dp
+                setColor(AndroidColor.parseColor("#0284C7"))
+            }
+            setOnClickListener {
+                if (ScreenShareService.isScreenSharing.value) {
+                    ScreenShareService.stopScreenShare(this@OverlayAssistantService)
+                    statusTitleView?.text = "স্ক্রিন শেয়ার বন্ধ"
+                } else {
+                    detachExpandedPanel()
+                    ScreenShareConsentActivity.launch(this@OverlayAssistantService)
+                }
+            }
+        }
+        screenShareButtonView = shareBtn
+        row1.addView(
+            shareBtn,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        card.addView(row1)
+
+        // Secondary Row: Voice Command/Chat | Open Main App
+        val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
         val micBtn = Button(this).apply {
-            text = "🎤 বলুন (Speak)"
+            text = "🎤 বলুন"
+            textSize = 12.5f
             setTextColor(AndroidColor.WHITE)
             background = GradientDrawable().apply {
-                cornerRadius = 16 * dp
+                cornerRadius = 14 * dp
                 setColor(AndroidColor.parseColor("#DB2777"))
             }
             setOnClickListener {
@@ -424,6 +585,7 @@ class OverlayAssistantService : Service() {
                     if (speechManager?.state?.value is SpeechUiState.Listening) {
                         speechManager?.stopListening()
                     } else {
+                        listenMode = OverlayListenMode.COMMAND
                         ttsManager?.stop()
                         characterPreviewView?.setImageResource(R.drawable.img_maya_idle)
                         speechManager?.startListening(
@@ -436,18 +598,19 @@ class OverlayAssistantService : Service() {
             }
         }
         micButtonView = micBtn
-        controls.addView(
+        row2.addView(
             micBtn,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f).apply {
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f).apply {
                 marginEnd = (6 * dp).toInt()
             }
         )
 
         val openBtn = Button(this).apply {
-            text = "অ্যাপ"
+            text = "অ্যাপ খুলুন"
+            textSize = 12.5f
             setTextColor(AndroidColor.WHITE)
             background = GradientDrawable().apply {
-                cornerRadius = 16 * dp
+                cornerRadius = 14 * dp
                 setColor(AndroidColor.parseColor("#2563EB"))
             }
             setOnClickListener {
@@ -458,11 +621,19 @@ class OverlayAssistantService : Service() {
                 startActivity(launch)
             }
         }
-        controls.addView(
+        row2.addView(
             openBtn,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f)
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.9f)
         )
-        card.addView(controls)
+        card.addView(
+            row2,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (8 * dp).toInt()
+            }
+        )
 
         expandedParams = params
         expandedView = card
@@ -472,6 +643,114 @@ class OverlayAssistantService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to attach expanded overlay card", e)
             isExpanded = false
+        }
+    }
+
+    private fun startDictateToFocusedApp() {
+        if (!SaraAccessibilityService.isAccessibilityEnabled(this)) {
+            accessibilityBannerBtn?.visibility = View.VISIBLE
+            replyBodyView?.text = "সব অ্যাপে টাইপ করতে আগে Accessibility অপশন থেকে Sara (Maya) চালু করুন।"
+            SaraAccessibilityService.openAccessibilitySettings(this)
+            return
+        }
+
+        serviceScope.launch {
+            val prefs = prefsRepo.preferences.first()
+            if (speechManager?.state?.value is SpeechUiState.Listening) {
+                speechManager?.stopListening()
+                return@launch
+            }
+            listenMode = OverlayListenMode.DICTATE_TO_APP
+            ttsManager?.stop()
+            characterPreviewView?.setImageResource(R.drawable.img_maya_idle)
+            statusTitleView?.text = "যেকোনো বক্সে কার্সর রেখে বলুন…"
+            speechManager?.startListening(
+                languageCode = prefs.languageCode,
+                onFinalResult = { transcript ->
+                    val res = SaraAccessibilityService.typeIntoFocusedField(
+                        context = this@OverlayAssistantService,
+                        dictatedText = transcript,
+                        append = true
+                    )
+                    val isBn = prefs.languageCode.startsWith("bn") || transcript.any { it in '\u0980'..'\u09FF' }
+                    val msg = if (isBn) res.messageBn else res.messageEn
+                    statusTitleView?.text = if (res.success) "Typed!" else "Input needed"
+                    replyBodyView?.text = msg
+                    if (res.success) {
+                        characterPreviewView?.setImageResource(R.drawable.img_maya_wave)
+                    }
+                },
+                onError = { err ->
+                    statusTitleView?.text = err
+                }
+            )
+        }
+    }
+
+    private fun inspectCurrentScreenWithGemini(userPrompt: String) {
+        val isSharingLive = ScreenShareService.isScreenSharing.value
+        val isAccReady = SaraAccessibilityService.isAccessibilityEnabled(this)
+
+        if (!isSharingLive && !isAccReady) {
+            accessibilityBannerBtn?.visibility = View.VISIBLE
+            replyBodyView?.text = "স্ক্রিন দেখার জন্য '📺 শেয়ার' চাপুন অথবা Accessibility থেকে Sara চালু করুন।"
+            ScreenShareConsentActivity.launch(this)
+            return
+        }
+
+        serviceScope.launch {
+            val prefs = prefsRepo.preferences.first()
+            statusTitleView?.text = "স্ক্রিন দেখছি…"
+            EdgeGlowController.updateMode(EdgeGlowMode.THINKING)
+            characterPreviewView?.setImageResource(R.drawable.img_maya_idle)
+
+            val summary = if (isAccReady) {
+                SaraAccessibilityService.readCurrentScreenContext()
+            } else {
+                com.example.accessibility.ScreenContextSummary("", "")
+            }
+
+            // Prefer live MediaProjection frame when Screen Share is active; otherwise use Accessibility screenshot
+            var screenBitmap = ScreenShareService.getLatestFrameCopy()
+            if (screenBitmap == null && isAccReady) {
+                expandedView?.visibility = View.INVISIBLE
+                bubbleView?.visibility = View.INVISIBLE
+                delay(200L)
+                screenBitmap = suspendCancellableCoroutine { cont ->
+                    SaraAccessibilityService.captureCurrentScreenBitmap { bmp ->
+                        if (cont.isActive) cont.resume(bmp)
+                    }
+                }
+                bubbleView?.visibility = View.VISIBLE
+                expandedView?.visibility = View.VISIBLE
+            }
+
+            statusTitleView?.text = "Gemini বিশ্লেষণ করছে…"
+
+            try {
+                val aiRes = aiRepo.analyzeScreenWithGemini(
+                    userPrompt = userPrompt,
+                    screenBitmap = screenBitmap,
+                    screenTextSummary = summary.visibleText,
+                    activePackageName = summary.activePackage,
+                    userName = prefs.userName,
+                    languageCode = prefs.languageCode,
+                    onStreamingChunk = { partial ->
+                        replyBodyView?.text = partial
+                    }
+                )
+                replyBodyView?.text = aiRes.replyText
+                statusTitleView?.text = if (aiRes.isError) "Error" else "Screen Ready"
+                if (prefs.speakResponses) {
+                    EdgeGlowController.updateMode(EdgeGlowMode.SPEAKING)
+                    ttsManager?.speak(aiRes.replyText, prefs.languageCode)
+                }
+            } finally {
+                screenBitmap?.recycle()
+                EdgeGlowController.updateMode(
+                    if (ScreenShareService.isScreenSharing.value) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+                )
+            }
         }
     }
 
@@ -486,6 +765,40 @@ class OverlayAssistantService : Service() {
             val parsed = SaraCommandParser.parse(text)
             val dao = SaraDatabase.getInstance(this@OverlayAssistantService).saraDao()
 
+            when (parsed) {
+                is ParsedSaraIntent.ToggleScreenShare -> {
+                    if (parsed.enable) {
+                        detachExpandedPanel()
+                        ScreenShareConsentActivity.launch(this@OverlayAssistantService)
+                    } else {
+                        ScreenShareService.stopScreenShare(this@OverlayAssistantService)
+                        replyBodyView?.text = if (isBn) "স্ক্রিন শেয়ার বন্ধ করা হয়েছে।" else "Screen share stopped."
+                        statusTitleView?.text = "Share Stopped"
+                    }
+                    return@launch
+                }
+                is ParsedSaraIntent.InspectScreen -> {
+                    inspectCurrentScreenWithGemini(text)
+                    return@launch
+                }
+                is ParsedSaraIntent.TypeDictatedText -> {
+                    val res = SaraAccessibilityService.typeIntoFocusedField(
+                        context = this@OverlayAssistantService,
+                        dictatedText = parsed.textToType,
+                        append = true
+                    )
+                    val msg = if (isBn) res.messageBn else res.messageEn
+                    replyBodyView?.text = msg
+                    statusTitleView?.text = if (res.success) "Typed!" else "Notice"
+                    if (prefs.speakResponses && !res.success) {
+                        ttsManager?.speak(msg, prefs.languageCode)
+                    }
+                    return@launch
+                }
+                else -> Unit
+            }
+
+            EdgeGlowController.updateMode(EdgeGlowMode.THINKING)
             val reply: String = when (parsed) {
                 is ParsedSaraIntent.ToggleFlashlight -> {
                     val res = actionExecutor.setFlashlight(parsed.enable)
@@ -525,32 +838,61 @@ class OverlayAssistantService : Service() {
                     }
                 }
                 is ParsedSaraIntent.SaveMemory -> {
-                    dao.insertMemory(com.example.data.local.MemoryNoteEntity(keyTopic = parsed.topic, content = parsed.content))
+                    dao.insertMemory(MemoryNoteEntity(keyTopic = parsed.topic, content = parsed.content))
                     if (isBn) "মনে রাখলাম: ${parsed.content}" else "Saved memory: ${parsed.content}"
                 }
                 is ParsedSaraIntent.AddTask -> {
-                    dao.insertTask(com.example.data.local.PersonalTaskEntity(title = parsed.title))
+                    dao.insertTask(PersonalTaskEntity(title = parsed.title))
                     if (isBn) "কাজ যোগ করেছি: ${parsed.title}" else "Added task: ${parsed.title}"
                 }
                 else -> {
-                    statusTitleView?.text = "Gemini চিন্তা করছে…"
-                    val aiRes = aiRepo.generateAssistantReply(
-                        prompt = text,
-                        userName = prefs.userName,
-                        languageCode = prefs.languageCode,
-                        history = emptyList(),
-                        onStreamingChunk = { partial ->
-                            replyBodyView?.text = partial
+                    val sharedFrame = if (ScreenShareService.isScreenSharing.value) {
+                        ScreenShareService.getLatestFrameCopy()
+                    } else {
+                        null
+                    }
+                    if (sharedFrame != null) {
+                        statusTitleView?.text = "স্ক্রিন + Gemini…"
+                        try {
+                            aiRepo.analyzeScreenWithGemini(
+                                userPrompt = text,
+                                screenBitmap = sharedFrame,
+                                screenTextSummary = "",
+                                activePackageName = "",
+                                userName = prefs.userName,
+                                languageCode = prefs.languageCode,
+                                onStreamingChunk = { partial ->
+                                    replyBodyView?.text = partial
+                                }
+                            ).replyText
+                        } finally {
+                            sharedFrame.recycle()
                         }
-                    )
-                    aiRes.replyText
+                    } else {
+                        statusTitleView?.text = "Gemini চিন্তা করছে…"
+                        val aiRes = aiRepo.generateAssistantReply(
+                            prompt = text,
+                            userName = prefs.userName,
+                            languageCode = prefs.languageCode,
+                            history = emptyList(),
+                            onStreamingChunk = { partial ->
+                                replyBodyView?.text = partial
+                            }
+                        )
+                        aiRes.replyText
+                    }
                 }
             }
 
             replyBodyView?.text = reply
             statusTitleView?.text = "Maya Ready"
             if (prefs.speakResponses) {
+                EdgeGlowController.updateMode(EdgeGlowMode.SPEAKING)
                 ttsManager?.speak(reply, prefs.languageCode)
+            } else {
+                EdgeGlowController.updateMode(
+                    if (ScreenShareService.isScreenSharing.value) EdgeGlowMode.SCREEN_SHARING else EdgeGlowMode.AMBIENT
+                )
             }
         }
     }
@@ -568,6 +910,9 @@ class OverlayAssistantService : Service() {
         replyBodyView = null
         characterPreviewView = null
         micButtonView = null
+        dictateButtonView = null
+        screenShareButtonView = null
+        accessibilityBannerBtn = null
         isExpanded = false
     }
 
@@ -581,6 +926,7 @@ class OverlayAssistantService : Service() {
         }
         bubbleView = null
         _isOverlayRunning.value = false
+        EdgeGlowController.updateOverlayState(this, active = false)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -605,6 +951,7 @@ class OverlayAssistantService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         _isOverlayRunning.value = false
+        EdgeGlowController.updateOverlayState(this, active = false)
         detachExpandedPanel()
         bubbleView?.let {
             try {

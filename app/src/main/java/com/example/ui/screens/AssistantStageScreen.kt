@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.BatteryStd
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PictureInPictureAlt
+import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -83,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.screenshare.ScreenShareService
 import com.example.ui.components.ReactiveMicOrbButton
 import com.example.ui.components.Sara3DCharacter
 import com.example.ui.components.VoiceWaveformStrip
@@ -108,6 +111,7 @@ fun AssistantStageScreen(
     val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
     val isVoiceServiceRunning by viewModel.isVoiceServiceRunning.collectAsStateWithLifecycle()
     val isOverlayRunning by viewModel.isOverlayRunning.collectAsStateWithLifecycle()
+    val isScreenSharing by viewModel.isScreenSharing.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val telemetry by viewModel.telemetry.collectAsStateWithLifecycle()
     val needsContactPerm by viewModel.needsContactPermissionPrompt.collectAsStateWithLifecycle()
@@ -130,6 +134,18 @@ fun AssistantStageScreen(
     ) {
         if (Settings.canDrawOverlays(context)) {
             viewModel.startOverlayMode()
+        }
+    }
+
+    val screenShareLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == android.app.Activity.RESULT_OK && data != null) {
+            viewModel.startScreenShare(result.resultCode, data)
+            if (Settings.canDrawOverlays(context) && !isOverlayRunning) {
+                viewModel.startOverlayMode()
+            }
         }
     }
 
@@ -278,6 +294,43 @@ fun AssistantStageScreen(
                                 text = if (isOverlayRunning) "Overlay On" else "Overlay",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isOverlayRunning) EmeraldPulse else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = if (isScreenSharing) {
+                            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f)
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                if (isScreenSharing) {
+                                    viewModel.stopScreenShare()
+                                } else {
+                                    screenShareLauncher.launch(ScreenShareService.createCaptureIntent(context))
+                                }
+                            }
+                            .testTag("screen_share_toggle_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isScreenSharing) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                                contentDescription = "Live screen share",
+                                tint = if (isScreenSharing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (isScreenSharing) "Sharing" else "Share",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isScreenSharing) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }

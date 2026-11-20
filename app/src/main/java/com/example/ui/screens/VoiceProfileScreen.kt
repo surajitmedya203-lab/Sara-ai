@@ -66,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.accessibility.SaraAccessibilityService
+import com.example.screenshare.ScreenShareService
 import com.example.ui.components.VoiceWaveformStrip
 import com.example.ui.theme.EmeraldPulse
 import com.example.ui.theme.SaraShaderStyle
@@ -84,6 +86,9 @@ fun VoiceProfileScreen(
     val availableVoices by viewModel.availableFemaleVoices.collectAsStateWithLifecycle()
     val activeVoiceLabel by viewModel.activeVoiceLabel.collectAsStateWithLifecycle()
     val isOverlayRunning by viewModel.isOverlayRunning.collectAsStateWithLifecycle()
+    val isScreenSharing by viewModel.isScreenSharing.collectAsStateWithLifecycle()
+    val isAccessibilityConnected by viewModel.isAccessibilityEnabled.collectAsStateWithLifecycle()
+    val isAccessibilityActive = isAccessibilityConnected || SaraAccessibilityService.isAccessibilityEnabled(context)
 
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var nameInput by remember(prefs.userName) { mutableStateOf(prefs.userName) }
@@ -97,6 +102,15 @@ fun VoiceProfileScreen(
     ) {
         if (Settings.canDrawOverlays(context)) {
             viewModel.startOverlayMode()
+        }
+    }
+
+    val screenShareLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == android.app.Activity.RESULT_OK && data != null) {
+            viewModel.startScreenShare(result.resultCode, data)
         }
     }
 
@@ -490,6 +504,82 @@ fun VoiceProfileScreen(
                                 }
                             },
                             modifier = Modifier.testTag("overlay_service_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(id = R.string.accessibility_card_title),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(id = R.string.accessibility_card_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { SaraAccessibilityService.openAccessibilitySettings(context) },
+                            modifier = Modifier.testTag("open_accessibility_settings_button")
+                        ) {
+                            Text(if (isAccessibilityActive) "Active ✓" else "Enable")
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(id = R.string.screen_share_toggle_title),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(id = R.string.screen_share_toggle_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = isScreenSharing,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    screenShareLauncher.launch(ScreenShareService.createCaptureIntent(context))
+                                } else {
+                                    viewModel.stopScreenShare()
+                                }
+                            },
+                            modifier = Modifier.testTag("screen_share_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(id = R.string.edge_glow_toggle_title),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(id = R.string.edge_glow_toggle_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = prefs.edgeGlowEnabled,
+                            onCheckedChange = { viewModel.updateEdgeGlowEnabled(it) },
+                            modifier = Modifier.testTag("edge_glow_switch")
                         )
                     }
 

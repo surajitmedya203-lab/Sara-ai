@@ -44,12 +44,16 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.data.ai.configureAppCheck
+import com.example.ui.components.ScreenEdgeGlowOverlay
 import com.example.ui.screens.AssistantStageScreen
 import com.example.ui.screens.PersonalVaultScreen
 import com.example.ui.screens.PhoneHubScreen
 import com.example.ui.screens.VoiceProfileScreen
+import com.example.ui.theme.SaraShaderStyle
 import com.example.ui.theme.SaraTheme
+import com.example.viewmodel.SaraMoodState
 import com.example.viewmodel.SaraViewModel
+import com.example.voice.SpeechUiState
 
 private sealed class SaraDestination(
     val route: String,
@@ -99,9 +103,31 @@ class MainActivity : ComponentActivity() {
         setContent {
             val viewModel: SaraViewModel = viewModel()
             val prefs by viewModel.preferences.collectAsStateWithLifecycle()
+            val moodState by viewModel.moodState.collectAsStateWithLifecycle()
+            val speechState by viewModel.speechState.collectAsStateWithLifecycle()
+            val micRms by viewModel.micRmsLevel.collectAsStateWithLifecycle()
+            val ttsMouth by viewModel.ttsMouthAmplitude.collectAsStateWithLifecycle()
+            val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
+            val isScreenSharing by viewModel.isScreenSharing.collectAsStateWithLifecycle()
+
+            val liveAmp = when {
+                speechState is SpeechUiState.Listening -> maxOf(0.22f, micRms)
+                isSpeaking -> ttsMouth
+                moodState == SaraMoodState.THINKING -> 0.35f
+                else -> 0f
+            }
 
             SaraTheme(darkTheme = prefs.darkTheme) {
-                SaraAppScaffold(viewModel = viewModel)
+                Box(modifier = Modifier.fillMaxSize()) {
+                    SaraAppScaffold(viewModel = viewModel)
+                    ScreenEdgeGlowOverlay(
+                        enabled = prefs.edgeGlowEnabled,
+                        moodState = moodState,
+                        audioAmplitude = liveAmp,
+                        isScreenSharing = isScreenSharing,
+                        shaderStyle = SaraShaderStyle.fromId(prefs.shaderStyleId)
+                    )
+                }
             }
         }
     }

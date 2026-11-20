@@ -5,6 +5,7 @@ import android.media.AudioManager
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.accessibility.SaraAccessibilityService
 import com.example.actions.ActionExecutionResult
 import com.example.actions.DeviceActionExecutor
 import com.example.actions.DeviceTelemetry
@@ -21,7 +22,10 @@ import com.example.data.local.RoutineEntity
 import com.example.data.local.SaraDatabase
 import com.example.data.local.SaraPreferences
 import com.example.data.local.UserPreferencesRepository
+import com.example.overlay.EdgeGlowController
 import com.example.overlay.OverlayAssistantService
+import com.example.screenshare.ScreenShareConsentActivity
+import com.example.screenshare.ScreenShareService
 import com.example.voice.FemaleVoiceOption
 import com.example.voice.SaraTtsManager
 import com.example.voice.SpeechUiState
@@ -113,6 +117,8 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
     val micRmsLevel: StateFlow<Float> = VoiceServiceBus.rmsLevel
     val isVoiceServiceRunning: StateFlow<Boolean> = VoiceServiceBus.isServiceRunning
     val isOverlayRunning: StateFlow<Boolean> = OverlayAssistantService.isOverlayRunning
+    val isScreenSharing: StateFlow<Boolean> = ScreenShareService.isScreenSharing
+    val isAccessibilityEnabled: StateFlow<Boolean> = SaraAccessibilityService.isServiceConnected
     val isSpeaking: StateFlow<Boolean> = ttsManager.isSpeaking
     val ttsMouthAmplitude: StateFlow<Float> = ttsManager.mouthAmplitude
     val availableFemaleVoices: StateFlow<List<FemaleVoiceOption>> = ttsManager.availableVoices
@@ -163,6 +169,7 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
     private fun observeVoicePreferences() {
         viewModelScope.launch {
             prefsRepo.preferences.collect { prefs ->
+                EdgeGlowController.setUserPreference(getApplication(), prefs.edgeGlowEnabled)
                 ttsManager.applyVoiceConfig(
                     toneId = prefs.voiceTonePreset,
                     preferredVoice = prefs.preferredTtsVoiceName,
@@ -571,30 +578,113 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
                         else -> if (isBengali) "ইয়ে! চলুন দারুণ কিছু করি আজ! ✨" else "Yay! Ready to have a great day!"
                     }
                 }
+                is ParsedSaraIntent.ToggleScreenShare -> {
+                    category = "SCREEN_SHARE"
+                    if (parsed.enable) {
+                        ScreenShareConsentActivity.launch(getApplication())
+                        actionSummary = "Requested live screen share"
+                        replyText = if (isBengali) {
+                            "লাইভ স্ক্রিন শেয়ার শুরু করছি — অনুগ্রহ করে স্ক্রিন শেয়ার অনুমতি দিন।"
+                        } else {
+                            "Starting live screen share — please approve the screen capture prompt."
+                        }
+                    } else {
+                        stopScreenShare()
+                        actionSummary = "Stopped live screen share"
+                        replyText = if (isBengali) {
+                            "লাইভ স্ক্রিন শেয়ার বন্ধ করা হয়েছে।"
+                        } else {
+                            "Live screen share stopped."
+                        }
+                    }
+                }
+                is ParsedSaraIntent.InspectScreen -> {
+                    val sharedBitmap = ScreenShareService.getLatestFrameCopy()
+                    val summary = SaraAccessibilityService.readCurrentScreenContext()
+                    category = "SCREEN_AI"
+                    if (sharedBitmap == null && summary.visibleText.isBlank()) {
+                        actionSummary = "Screen share or Accessibility needed"
+                        replyText = if (isBengali) {
+                            "স্ক্রিন দেখাতে উপরের 'Share' বাটন থেকে লাইভ স্ক্রিন শেয়ার অন করুন অথবা Voice ID থেকে Accessibility চালু করুন!"
+                        } else {
+                            "Turn on Live Screen Share from the top bar or enable Accessibility in Voice ID to let me see your screen."
+                        }
+                    } else {
+                        try {
+                            val res = aiRepo.analyzeScreenWithGemini(
+                                userPrompt = text,
+                                screenBitmap = sharedBitmap,
+                                screenTextSummary = summary.visibleText,
+                                activePackageName = summary.activePackage,
+                                userName = prefs.userName,
+                                languageCode = prefs.languageCode
+                            )
+                            replyText = res.replyText
+                            status = if (res.isError) "ERROR" else "EXECUTED"
+                            actionSummary = "Analyzed screen"
+                        } finally {
+                            sharedBitmap?.recycle()
+                        }
+                    }
+                }
+                is ParsedSaraIntent.TypeDictatedText -> {
+                    val res = SaraAccessibilityService.typeIntoFocusedField(
+                        context = getApplication(),
+                        dictatedText = parsed.textToType,
+                        append = true
+                    )
+                    category = "VOICE_TYPE"
+                    actionSummary = if (res.success) "Typed into app" else "Type skipped"
+                    replyText = if (isBengali) res.messageBn else res.messageEn
+                }
                 is ParsedSaraIntent.GenerativeAiQuery -> {
                     val history = _messages.value.dropLast(1).takeLast(8).map { ChatTurn(it.isUser, it.text) }
                     val streamBubbleId = System.nanoTime()
+                    val liveBitmap = if (ScreenShareService.isScreenSharing.value) {
+                        ScreenShareService.getLatestFrameCopy()
+                    } else {
+                        null
+                    }
                     appendBubble(
                         ConversationBubble(
                             id = streamBubbleId,
                             isUser = false,
                             text = if (isBengali) "চিন্তা করছি…" else "Thinking…",
-                            badge = "GEMINI"
+                            badge = if (liveBitmap != null) "SCREEN+GEMINI" else "GEMINI"
                         )
                     )
-                    val aiResult = aiRepo.generateAssistantReply(
-                        prompt = parsed.prompt,
-                        userName = prefs.userName,
-                        languageCode = prefs.languageCode,
-                        history = history,
-                        onStreamingChunk = { partialText ->
-                            updateBubbleText(streamBubbleId, partialText, "GEMINI")
+                    val aiResult = if (liveBitmap != null) {
+                        val summary = SaraAccessibilityService.readCurrentScreenContext()
+                        try {
+                            aiRepo.analyzeScreenWithGemini(
+                                userPrompt = parsed.prompt,
+                                screenBitmap = liveBitmap,
+                                screenTextSummary = summary.visibleText,
+                                activePackageName = summary.activePackage,
+                                userName = prefs.userName,
+                                languageCode = prefs.languageCode,
+                                onStreamingChunk = { partialText ->
+                                    updateBubbleText(streamBubbleId, partialText, "SCREEN+GEMINI")
+                                }
+                            )
+                        } finally {
+                            liveBitmap.recycle()
                         }
-                    )
+                    } else {
+                        aiRepo.generateAssistantReply(
+                            prompt = parsed.prompt,
+                            userName = prefs.userName,
+                            languageCode = prefs.languageCode,
+                            history = history,
+                            onStreamingChunk = { partialText ->
+                                updateBubbleText(streamBubbleId, partialText, "GEMINI")
+                            }
+                        )
+                    }
                     replyText = aiResult.replyText
                     isSampleAi = aiResult.isSampleMode
                     status = if (aiResult.isError) "ERROR" else "EXECUTED"
-                    category = if (aiResult.isError) "AI_ERROR" else "GEMINI"
+                    category = if (aiResult.isError) "AI_ERROR" else if (liveBitmap != null) "SCREEN_AI" else "GEMINI"
                     actionSummary = if (aiResult.isError) "Gemini AI error" else "Gemini AI reply"
                     updateBubbleText(streamBubbleId, replyText, category)
                 }
@@ -886,6 +976,19 @@ class SaraViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun stopOverlayMode() {
         OverlayAssistantService.stopOverlay(getApplication())
+    }
+    fun startScreenShare(resultCode: Int, data: android.content.Intent) {
+        ScreenShareService.startScreenShare(getApplication(), resultCode, data)
+    }
+    fun stopScreenShare() {
+        ScreenShareService.stopScreenShare(getApplication())
+    }
+    fun launchScreenShareConsent() {
+        ScreenShareConsentActivity.launch(getApplication())
+    }
+    fun updateEdgeGlowEnabled(enabled: Boolean) = viewModelScope.launch {
+        prefsRepo.setEdgeGlowEnabled(enabled)
+        EdgeGlowController.setUserPreference(getApplication(), enabled)
     }
     fun updateSpeakResponses(enabled: Boolean) = viewModelScope.launch { prefsRepo.setSpeakResponses(enabled) }
     fun updateContinuousListening(enabled: Boolean) = viewModelScope.launch {
