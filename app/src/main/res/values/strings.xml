@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Sara</string>
+    <string name="sara_subtitle">3D Voice Assistant</string>
+    <string name="nav_sara">Sara</string>
+    <string name="nav_actions">Phone Hub</string>
+    <string name="nav_personal">Personal</string>
+    <string name="nav_voice">Voice ID</string>
+    <string name="mic_content_desc">Tap to speak to Sara</string>
+    <string name="sara_3d_avatar_desc">Sara interactive 3D hologram character</string>
+    <string name="sample_ai_notice">Open-ended AI replies are running in local sample mode. Enable Firebase AI Logic in AI Studio to connect live Gemini intelligence.</string>
+    <string name="ask_sara_hint">Ask Sara anything or give a phone command...</string>
+    <string name="voice_enroll_desc">Record 3 short voice phrases so Sara learns your unique acoustic voiceprint.</string>
+</resources>

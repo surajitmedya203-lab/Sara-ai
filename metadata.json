@@ -1,0 +1,6 @@
+{
+  "name": "Sara",
+  "description": "An interactive 3D AI voice assistant that recognizes your voice, manages personal tasks and memories, and controls Android phone actions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
